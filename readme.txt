@@ -1,7 +1,7 @@
 
-=== AgenticPress Home Values ===
+=== AgenticPress AI Home Values ===
 Contributors: agenticpress
-Tags: real estate, home values, property, attom, avm
+Tags: real estate, home values, property, attom, avm, ai
 Requires at least: 5.0
 Tested up to: 6.4
 Requires PHP: 7.4
@@ -13,7 +13,7 @@ Provides a home value form via shortcode that retrieves property valuations from
 
 == Description ==
 
-AgenticPress Home Values is a WordPress plugin that allows you to easily add a home value lookup form to any page, post, or widget on your website. The plugin integrates with the ATTOM API to provide accurate property valuations and details.
+AgenticPress AI Home Values is a WordPress plugin that allows you to easily add a home value lookup form to any page, post, or widget on your website. The plugin integrates with the ATTOM API to provide accurate property valuations and details.
 
 **Key Features:**
 
