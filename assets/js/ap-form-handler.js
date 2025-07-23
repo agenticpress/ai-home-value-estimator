@@ -7,17 +7,11 @@ jQuery(document).ready(function ($) {
   if (autocompleteElement) {
     autocompleteElement.addEventListener('gmp-select', async (event) => {
       const placePrediction = event.placePrediction;
-      if (!placePrediction) {
-        return;
-      }
+      if (!placePrediction) return;
 
       const place = placePrediction.toPlace();
-
       await place.fetchFields({ fields: ['addressComponents'] });
-
-      if (!place.addressComponents) {
-        return;
-      }
+      if (!place.addressComponents) return;
 
       const getComponent = (type) => {
         const component = place.addressComponents.find(c => c.types.includes(type));
@@ -64,8 +58,9 @@ jQuery(document).ready(function ($) {
         const details = response.data.details;
         let html = '<h3>Property Details</h3>';
         html += '<div class="agenticpress-hv-details-grid">';
-        html += '<div><strong>Estimated Value:</strong> ' + details.estimated_value + '</div>';
-        html += '<div><strong>Assessed Value:</strong> ' + details.assessed_value + '</div>';
+        html += '<div><strong>Estimated Value (AVM):</strong> ' + details.estimated_value + '</div>';
+        html += '<div><strong>Value Range (High-Low):</strong> ' + details.avm_range + '</div>';
+        html += '<div><strong>AVM Confidence Score:</strong> ' + details.confidence_score + '</div>';
         html += '<div><strong>Bedrooms:</strong> ' + details.bedrooms + '</div>';
         html += '<div><strong>Bathrooms:</strong> ' + details.bathrooms + '</div>';
         html += '<div><strong>Year Built:</strong> ' + details.year_built + '</div>';
