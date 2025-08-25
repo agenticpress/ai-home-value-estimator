@@ -2,7 +2,7 @@
 /**
  * Plugin Name:       AgenticPress AI Home Values
  * Description:       Provides a home value form via a shortcode and retrieves an AVM from the ATTOM API.
- * Version:           1.6.2 (Final Color Fix)
+ * Version:           1.6.4 (Definitive Autofill & Component Style Fix)
  * Author:            AgenticPress
  * License:           GPL-2.0+
  * License URI:       http://www.gnu.org/licenses/gpl-2.0.txt
@@ -845,20 +845,26 @@ function agenticpress_hv_render_form($atts) {
     ?>
     <style>
         #agenticpress-hv-container gmp-place-autocomplete {
-            /* This sets a CSS variable that the component can use internally */
-            --gmp-input-text-color: <?php echo $text_color; ?> !important;
-
-            /* This styles the component's background, which works directly */
-            background-color: <?php echo $background_color; ?> !important;
+            /* This is the best practice for styling the component's internals */
+            --gmp-mat-color-on-surface: <?php echo $text_color; ?>;
+            --gmp-mat-color-surface: <?php echo $background_color; ?>;
+            width: 100%;
         }
 
-        /* This is a fallback and ensures the input itself has a transparent background */
-        #agenticpress-hv-container gmp-place-autocomplete input {
-            width: 100%;
+        /* This provides a powerful, direct way to style the input "part" */
+        #agenticpress-hv-container gmp-place-autocomplete::part(input) {
+            color: <?php echo $text_color; ?> !important;
+            background-color: <?php echo $background_color; ?> !important;
+            border: 1px solid #767676 !important;
             padding: 8px;
             box-sizing: border-box;
-            background-color: transparent !important;
-            border: 1px solid #767676 !important;
+        }
+
+        /* This targets the browser's aggressive autofill styles */
+        #agenticpress-hv-container gmp-place-autocomplete::part(input):-webkit-autofill {
+            -webkit-box-shadow: 0 0 0 100px <?php echo $background_color; ?> inset !important;
+            -webkit-text-fill-color: <?php echo $text_color; ?> !important;
+            transition: background-color 5000s ease-in-out 0s;
         }
 
         /* General styles for the results container */
