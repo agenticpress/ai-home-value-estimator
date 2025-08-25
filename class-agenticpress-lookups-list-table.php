@@ -17,6 +17,7 @@ class AgenticPress_Lookups_List_Table extends WP_List_Table {
         return [
             'cb'            => '<input type="checkbox" />',
             'full_address'  => 'Address',
+            'cma_status'    => 'CMA Status',
             'property_type' => 'Property Type',
             'avm_value'     => 'AVM',
             'bedrooms'      => 'Beds',
@@ -46,6 +47,17 @@ class AgenticPress_Lookups_List_Table extends WP_List_Table {
             default:
                 return $item[$column_name] ? esc_html($item[$column_name]) : 'N/A';
         }
+    }
+
+    protected function column_cma_status($item) {
+        if (!empty($item['gform_entry_id']) && class_exists('GFAPI')) {
+            $cma_form_id = get_option('agenticpress_hv_gf_cma_form');
+            if ($cma_form_id) {
+                $url = admin_url('admin.php?page=gf_entries&view=entry&id=' . $cma_form_id . '&lid=' . $item['gform_entry_id']);
+                return sprintf('<a href="%s" class="button button-small" target="_blank" rel="noopener noreferrer">View Entry</a>', esc_url($url));
+            }
+        }
+        return 'Address Only';
     }
 
     protected function column_full_address($item) {
