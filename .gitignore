@@ -1,51 +1,115 @@
-# Composer
-composer.phar
+# WordPress Plugin .gitignore
+
+# WordPress core files (if accidentally included)
+/wordpress/
+/wp-admin/
+/wp-includes/
+wp-*.php
+xmlrpc.php
+.htaccess
+
+# WordPress configuration
+wp-config.php
+wp-config-local.php
+wp-config-production.php
+wp-config-staging.php
+
+# Database dumps
+*.sql
+*.sql.gz
+*.sql.zip
+
+# Log files
+*.log
+error_log
+debug.log
+
+# Cache files
+/cache/
+/wp-content/cache/
+/wp-content/advanced-cache.php
+/wp-content/wp-cache-config.php
+
+# Backup files
+*.bak
+*.backup
+*.old
+*.orig
+*.save
+*.swp
+*.tmp
+*~
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# IDE and editor files
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+*.komodoproject
+.komodotools/
+.brackets.json
+*.tmproj
+*.tmproject
+tmtags
+
+# Node.js dependencies (if using build tools)
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+package-lock.json
+yarn.lock
+
+# Build artifacts
+/build/
+/dist/
+/assets/build/
+*.min.js
+*.min.css
+
+# Composer dependencies
 /vendor/
+composer.lock
 
-# CakePHP 3
+# Environment files
+.env
+.env.local
+.env.production
+.env.staging
+.env.development
 
-/vendor/*
-/config/app.php
+# Plugin specific
+*.zip
+/releases/
 
-/tmp/cache/models/*
-!/tmp/cache/models/empty
-/tmp/cache/persistent/*
-!/tmp/cache/persistent/empty
-/tmp/cache/views/*
-!/tmp/cache/views/empty
-/tmp/sessions/*
-!/tmp/sessions/empty
-/tmp/tests/*
-!/tmp/tests/empty
+# WordPress uploads (usually not in plugin directory)
+/uploads/
+/wp-content/uploads/
 
-/logs/*
-!/logs/empty
+# Plugin development
+/tests/
+/phpunit.xml
+/.phpunit.result.cache
+/coverage/
 
-# CakePHP 2
+# Version control
+.git/
+.gitattributes
+.gitmodules
 
-/app/tmp/*
-/app/Config/core.php
-/app/Config/database.php
-/vendors/*
+# Documentation builds
+/docs/_build/
+/site/
 
-# the composer package lock file and install directory
-# Commit your application's lock file http://getcomposer.org/doc/01-basic-usage.md#composer-lock-the-lock-file
-# You may choose to ignore a library lock file http://getcomposer.org/doc/02-libraries.md#lock-file
-# /composer.lock
-/fuel/vendor
-
-# the fuelphp document
-/docs/
-
-# you may install these packages with `oil package`.
-# http://fuelphp.com/docs/packages/oil/package.html
-# /fuel/packages/auth/
-# /fuel/packages/email/
-# /fuel/packages/oil/
-# /fuel/packages/orm/
-# /fuel/packages/parser/
-
-# dynamically generated files
-/fuel/app/logs/*/*/*
-/fuel/app/cache/*/*
-/fuel/app/config/crypt.php
+# Temporary files
+/tmp/
+/temp/
