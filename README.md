@@ -159,6 +159,24 @@ define('AGENTICPRESS_DEFAULT_TEXT', '#333333');
 define('AGENTICPRESS_AI_DESCRIPTIONS', true);
 ```
 
+## Development & Testing
+
+### Uninstall Testing
+For developers, a test script is provided to validate the uninstall process:
+
+```bash
+# Run from plugin directory in development environment
+php test-uninstall.php
+```
+
+This script will:
+- Inventory all plugin data before uninstall
+- Validate that uninstall.php contains all required cleanup functions
+- Perform security checks on the uninstall process
+- Provide a dry-run test without actually removing data
+
+⚠️ **Only run this in development environments with `WP_DEBUG` enabled.**
+
 ## Troubleshooting
 
 ### Common Issues

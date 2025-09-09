@@ -494,7 +494,8 @@ jQuery(document).ready(function ($) {
       return;
     }
 
-    const formData = {
+    // Prepare form data
+    const baseFormData = {
       action: 'agenticpress_get_home_value',
       nonce: agenticpress_hv_ajax.nonce,
       address1: selectedAddress1,
@@ -502,6 +503,36 @@ jQuery(document).ready(function ($) {
       website: $('#agenticpress-website').val(), // Honeypot field
       form_timestamp: $('#agenticpress-form-timestamp').val() // Timing verification
     };
+
+    // Handle reCAPTCHA if enabled
+    if (typeof agenticpress_hv_recaptcha !== 'undefined' && agenticpress_hv_recaptcha.enabled) {
+      grecaptcha.ready(function() {
+        grecaptcha.execute(agenticpress_hv_recaptcha.site_key, {action: 'home_value_estimate'}).then(function(token) {
+          const formData = {
+            ...baseFormData,
+            'g-recaptcha-response': token
+          };
+          submitFormWithData(formData);
+        });
+      });
+    } else {
+      submitFormWithData(baseFormData);
+    }
+  });
+
+  // Extract form submission logic into separate function
+  function submitFormWithData(formData) {
+    const formWrapper = $('#agenticpress-hv-form-wrapper');
+    const resultContainer = $('#agenticpress-combined-result-container');
+    const errorContainer = $('#agenticpress-hv-error-container');
+    const submitButton = $('#agenticpress-hv-form').find('button[type="submit"]');
+    const originalButtonText = submitButton.text();
+
+    // Reset state
+    errorContainer.hide().html('');
+    resultContainer.hide();
+    $('#agenticpress-ai-summary-wrapper').hide(); // Hide AI summary on new request
+    submitButton.prop('disabled', true).text('Checking...');
 
     $.post(agenticpress_hv_ajax.ajax_url, formData, function (response) {
       if (response.success) {
@@ -549,7 +580,7 @@ jQuery(document).ready(function ($) {
       errorContainer.html('<strong>Error:</strong> An unknown server error occurred.').show();
       submitButton.prop('disabled', false).text(originalButtonText);
     });
-  });
+  }
 
   // Prevent Gravity Forms from jumping the page
   $(document).on('gform_confirmation_loaded', function(event, formId) {

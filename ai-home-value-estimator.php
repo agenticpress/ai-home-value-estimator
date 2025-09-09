@@ -40,6 +40,10 @@ register_activation_hook(__FILE__, 'agenticpress_hv_activate');
 register_deactivation_hook(__FILE__, 'agenticpress_hv_deactivate');
 
 function agenticpress_hv_activate() {
+    // Set plugin version for upgrade tracking
+    $current_version = '1.0.0';
+    $installed_version = get_option('agenticpress_hv_plugin_version', '0.0.0');
+    
     // Create the Super Admin role with specific capabilities
     add_role(
         'agenticpress_super_admin',
@@ -47,7 +51,6 @@ function agenticpress_hv_activate() {
         [
             'read' => true, // Basic access to the dashboard
             'agenticpress_manage_settings' => true,
-            'agenticpress_access_api_test' => true,
         ]
     );
 
@@ -55,11 +58,24 @@ function agenticpress_hv_activate() {
     $admin_role = get_role('administrator');
     if ($admin_role) {
         $admin_role->add_cap('agenticpress_manage_settings');
-        $admin_role->add_cap('agenticpress_access_api_test');
     }
 
-    // Also run the table creation
+    // Run database creation/upgrade
     agenticpress_hv_create_property_table();
+    agenticpress_hv_create_security_log_table();
+    
+    // Check if upgrade is needed
+    if (version_compare($installed_version, $current_version, '<')) {
+        agenticpress_hv_upgrade_plugin($installed_version, $current_version);
+    }
+    
+    // Update plugin version
+    update_option('agenticpress_hv_plugin_version', $current_version);
+    
+    // Set activation timestamp
+    if (!get_option('agenticpress_hv_activated_time')) {
+        update_option('agenticpress_hv_activated_time', current_time('mysql'));
+    }
 }
 
 function agenticpress_hv_deactivate() {
@@ -68,10 +84,105 @@ function agenticpress_hv_deactivate() {
     $admin_role = get_role('administrator');
     if ($admin_role) {
         $admin_role->remove_cap('agenticpress_manage_settings');
-        $admin_role->remove_cap('agenticpress_access_api_test');
     }
 }
 
+
+// -----------------------------------------------------------------------------
+// Plugin Upgrade System
+// -----------------------------------------------------------------------------
+
+/**
+ * Handle plugin upgrades between versions
+ */
+function agenticpress_hv_upgrade_plugin($from_version, $to_version) {
+    // Log the upgrade
+    if (defined('WP_DEBUG_LOG') && WP_DEBUG_LOG) {
+        error_log("AgenticPress HV: Upgrading from version $from_version to $to_version");
+    }
+    
+    // Version-specific upgrade routines
+    if (version_compare($from_version, '1.0.0', '<')) {
+        agenticpress_hv_upgrade_to_1_0_0();
+    }
+    
+    // Future version upgrades would go here
+    // if (version_compare($from_version, '1.1.0', '<')) {
+    //     agenticpress_hv_upgrade_to_1_1_0();
+    // }
+    
+    // Clear any relevant caches after upgrade
+    if (function_exists('wp_cache_flush')) {
+        wp_cache_flush();
+    }
+}
+
+/**
+ * Upgrade routines for version 1.0.0
+ */
+function agenticpress_hv_upgrade_to_1_0_0() {
+    // Set default security settings for existing installations
+    if (!get_option('agenticpress_hv_enable_advanced_protection')) {
+        update_option('agenticpress_hv_enable_advanced_protection', true);
+    }
+    
+    if (!get_option('agenticpress_hv_captcha_threshold')) {
+        update_option('agenticpress_hv_captcha_threshold', 0.5);
+    }
+    
+    // Ensure security log table exists with new schema
+    agenticpress_hv_create_security_log_table();
+}
+
+/**
+ * Check database version and upgrade if needed
+ */
+function agenticpress_hv_check_database_version() {
+    $current_db_version = '1.2'; // Increment this when database changes are made
+    $installed_db_version = get_option('agenticpress_hv_db_version', '1.0');
+    
+    if (version_compare($installed_db_version, $current_db_version, '<')) {
+        agenticpress_hv_upgrade_database($installed_db_version, $current_db_version);
+        update_option('agenticpress_hv_db_version', $current_db_version);
+    }
+}
+
+/**
+ * Handle database upgrades
+ */
+function agenticpress_hv_upgrade_database($from_version, $to_version) {
+    if (version_compare($from_version, '1.1', '<')) {
+        // Add new columns to existing tables if needed
+        agenticpress_hv_upgrade_properties_table_v1_1();
+    }
+    
+    if (version_compare($from_version, '1.2', '<')) {
+        // Ensure security log table has latest schema
+        agenticpress_hv_create_security_log_table();
+    }
+}
+
+/**
+ * Upgrade properties table to version 1.1 (example)
+ */
+function agenticpress_hv_upgrade_properties_table_v1_1() {
+    global $wpdb;
+    $table_name = $wpdb->prefix . 'agenticpress_properties';
+    
+    // Check if column exists before adding
+    $column_exists = $wpdb->get_results(
+        $wpdb->prepare(
+            "SELECT * FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = %s AND TABLE_NAME = %s AND COLUMN_NAME = %s",
+            DB_NAME,
+            $table_name,
+            'security_score'
+        )
+    );
+    
+    if (empty($column_exists)) {
+        $wpdb->query("ALTER TABLE $table_name ADD COLUMN security_score DECIMAL(3,2) DEFAULT NULL AFTER confidence_score");
+    }
+}
 
 // -----------------------------------------------------------------------------
 // Database Table Creation
@@ -81,6 +192,9 @@ function agenticpress_hv_create_property_table() {
     $new_table_name = $wpdb->prefix . 'agenticpress_properties';
     $old_table_name = $wpdb->prefix . 'agenticpress_lookups';
     $charset_collate = $wpdb->get_charset_collate();
+    
+    // Check and upgrade database if needed
+    agenticpress_hv_check_database_version();
 
     // Rename old table if it exists to preserve data
     if ($wpdb->get_var("SHOW TABLES LIKE '$old_table_name'") === $old_table_name) {
@@ -124,6 +238,41 @@ function agenticpress_hv_create_property_table() {
 
     require_once(ABSPATH . 'wp-admin/includes/upgrade.php');
     dbDelta($sql);
+    
+    // Set initial database version
+    if (!get_option('agenticpress_hv_db_version')) {
+        update_option('agenticpress_hv_db_version', '1.2');
+    }
+}
+
+/**
+ * Create security log table
+ */
+function agenticpress_hv_create_security_log_table() {
+    global $wpdb;
+    $table_name = $wpdb->prefix . 'agenticpress_security_log';
+    $charset_collate = $wpdb->get_charset_collate();
+    
+    $sql = "CREATE TABLE $table_name (
+        id int(11) NOT NULL AUTO_INCREMENT,
+        timestamp datetime NOT NULL,
+        event_type varchar(50) NOT NULL DEFAULT 'rate_limit_violation',
+        ip_address varchar(45) NOT NULL,
+        request_count int(11) DEFAULT NULL,
+        tier varchar(20) DEFAULT NULL,
+        user_agent text,
+        referer text,
+        request_method varchar(10) DEFAULT NULL,
+        additional_data JSON,
+        PRIMARY KEY (id),
+        KEY idx_timestamp (timestamp),
+        KEY idx_ip_address (ip_address),
+        KEY idx_event_type (event_type),
+        KEY idx_tier (tier)
+    ) $charset_collate;";
+    
+    require_once(ABSPATH . 'wp-admin/includes/upgrade.php');
+    dbDelta($sql);
 }
 
 // -----------------------------------------------------------------------------
@@ -144,10 +293,8 @@ function agenticpress_hv_add_admin_menu() {
     add_menu_page('Home Values', 'Home Values', 'read', 'agenticpress_home_values', 'agenticpress_hv_welcome_page_html', 'dashicons-admin-home', 25);
     add_submenu_page('agenticpress_home_values', 'Welcome', 'Welcome', 'read', 'agenticpress_home_values', 'agenticpress_hv_welcome_page_html');
     add_submenu_page('agenticpress_home_values', 'Configuration', 'Configuration', 'read', 'agenticpress-configuration', 'agenticpress_hv_configuration_page_html');
-    if (current_user_can('agenticpress_access_api_test')) {
-        add_submenu_page('agenticpress_home_values', 'API Test Area', 'API Test Area', 'agenticpress_access_api_test', 'agenticpress_api_test', 'agenticpress_hv_api_test_page_html');
-    }
     add_submenu_page('agenticpress_home_values', 'Lookups', 'Lookups', 'read', 'agenticpress_lookups', 'agenticpress_hv_lookups_page_html');
+    add_submenu_page('agenticpress_home_values', 'Security', 'Security', 'agenticpress_manage_settings', 'agenticpress_security', 'agenticpress_hv_security_page_html');
 }
 
 // Sanitize callback to prevent saved keys from being deleted on empty submit
@@ -185,8 +332,6 @@ function agenticpress_hv_settings_init() {
     // Group for Google Settings
     add_settings_section('agenticpress_hv_google_section', 'Google Places API Settings', 'agenticpress_hv_google_section_html', 'agenticpress_google');
     add_settings_field('agenticpress_hv_google_api_key_field', 'Google Places API Key', 'agenticpress_hv_google_api_key_field_html', 'agenticpress_google', 'agenticpress_hv_google_section');
-    register_setting('agenticpress_hv_google_settings', 'agenticpress_hv_input_bg_color');
-    add_settings_field('agenticpress_hv_input_bg_color_field', 'Input Background Color', 'agenticpress_hv_input_bg_color_field_html', 'agenticpress_google', 'agenticpress_hv_google_section');
 
 
     // Group for AI Settings
@@ -199,6 +344,18 @@ function agenticpress_hv_settings_init() {
     add_settings_field('agenticpress_hv_ai_limit_field', 'Monthly AI Requests Limit', 'agenticpress_hv_ai_limit_field_html', 'agenticpress_ai', 'agenticpress_hv_ai_section');
     add_settings_field('agenticpress_hv_ai_instructions_field', 'AI Instructions', 'agenticpress_hv_ai_instructions_field_html', 'agenticpress_ai', 'agenticpress_hv_ai_section');
 
+    // Group for Security Settings
+    register_setting('agenticpress_hv_security_settings', 'agenticpress_hv_recaptcha_site_key');
+    register_setting('agenticpress_hv_security_settings', 'agenticpress_hv_recaptcha_secret_key');
+    register_setting('agenticpress_hv_security_settings', 'agenticpress_hv_enable_captcha');
+    register_setting('agenticpress_hv_security_settings', 'agenticpress_hv_captcha_threshold');
+    register_setting('agenticpress_hv_security_settings', 'agenticpress_hv_enable_advanced_protection');
+    add_settings_section('agenticpress_hv_security_section', 'Security & Bot Protection', 'agenticpress_hv_security_section_html', 'agenticpress_security');
+    add_settings_field('agenticpress_hv_enable_captcha_field', 'Enable reCAPTCHA', 'agenticpress_hv_enable_captcha_field_html', 'agenticpress_security', 'agenticpress_hv_security_section');
+    add_settings_field('agenticpress_hv_recaptcha_site_key_field', 'reCAPTCHA Site Key', 'agenticpress_hv_recaptcha_site_key_field_html', 'agenticpress_security', 'agenticpress_hv_security_section');
+    add_settings_field('agenticpress_hv_recaptcha_secret_key_field', 'reCAPTCHA Secret Key', 'agenticpress_hv_recaptcha_secret_key_field_html', 'agenticpress_security', 'agenticpress_hv_security_section');
+    add_settings_field('agenticpress_hv_captcha_threshold_field', 'CAPTCHA Score Threshold', 'agenticpress_hv_captcha_threshold_field_html', 'agenticpress_security', 'agenticpress_hv_security_section');
+    add_settings_field('agenticpress_hv_enable_advanced_protection_field', 'Enable Advanced Bot Protection', 'agenticpress_hv_enable_advanced_protection_field_html', 'agenticpress_security', 'agenticpress_hv_security_section');
 
     // Group for Gravity Forms Settings
     if (class_exists('GFAPI')) {
@@ -399,16 +556,6 @@ function agenticpress_hv_ai_api_key_field_html() {
     agenticpress_hv_render_secure_key_field('agenticpress_hv_ai_api_key', 'AGENTICPRESS_GEMINI_API_KEY');
 }
 
-function agenticpress_hv_input_bg_color_field_html() {
-    $bg_color = get_option('agenticpress_hv_input_bg_color', 'white');
-    ?>
-    <select name="agenticpress_hv_input_bg_color">
-        <option value="white" <?php selected($bg_color, 'white'); ?>>White</option>
-        <option value="black" <?php selected($bg_color, 'black'); ?>>Black</option>
-    </select>
-    <p class="description">Select the background color for the address input field to resolve theme conflicts.</p>
-    <?php
-}
 
 function agenticpress_hv_avm_limit_field_html() {
     $limit = get_option('agenticpress_hv_avm_limit', 100);
@@ -441,15 +588,157 @@ function agenticpress_hv_ai_limit_field_html() {
     echo '<p class="description">This limit is set by AgenticPress support after feature activation.</p>';
 }
 
+/**
+ * PERMANENT DATA STRUCTURE REFERENCE
+ * ==================================
+ * This function serves as the canonical reference for all data fields available 
+ * from the ATTOM API response. This data structure maps directly to the database
+ * schema in the agenticpress_properties table.
+ * 
+ * DATABASE MAPPING:
+ * - Each key corresponds to a column in wp_agenticpress_properties table
+ * - Values are extracted from ATTOM API JSON response using agenticpress_hv_get_value_from_json()
+ * - All fields are sanitized before database insertion
+ * 
+ * ATTOM API SOURCE PATHS:
+ * - full_address: property.address.oneLine
+ * - street: property.address.line1  
+ * - city: property.address.locality
+ * - state: property.address.countrySubd
+ * - zip: property.address.postal1
+ * - latitude: property.location.latitude
+ * - longitude: property.location.longitude
+ * - property_type: property.summary.proptype
+ * - year_built: property.summary.yearbuilt
+ * - lot_size_acres: property.lot.lotsize1
+ * - building_size_sqft: property.building.size.livingsize
+ * - bedrooms: property.building.rooms.beds
+ * - bathrooms: property.building.rooms.bathstotal
+ * - avm_value: property.avm.amount.value
+ * - avm_confidence_score: property.avm.amount.scr
+ * - avm_value_high: property.avm.amount.high
+ * - avm_value_low: property.avm.amount.low
+ * - last_sale_date: property.sale.saleTransDate
+ * - last_sale_price: property.sale.amount.saleamt
+ * - assessed_total_value: property.assessment.assessed.assdttlvalue
+ * - market_total_value: property.assessment.market.mktttlvalue
+ * - owner_name: property.owner.owner1.fullname
+ * - attomId: property.identifier.attomId
+ * 
+ * Get all available data placeholders for AI instructions
+ * This serves as the permanent reference for available data fields from ATTOM API
+ */
+function agenticpress_hv_get_ai_placeholders() {
+    return [
+        'Property Address & Location' => [
+            'full_address' => 'Complete property address',
+            'street' => 'Street address (line 1)',
+            'city' => 'City name',
+            'state' => 'State abbreviation',
+            'zip' => 'ZIP/postal code',
+            'latitude' => 'Property latitude coordinates',
+            'longitude' => 'Property longitude coordinates'
+        ],
+        'Property Details' => [
+            'property_type' => 'Type of property (Single Family, Condo, etc.)',
+            'year_built' => 'Year the property was built',
+            'lot_size_acres' => 'Lot size in acres',
+            'building_size_sqft' => 'Living area square footage',
+            'bedrooms' => 'Number of bedrooms',
+            'bathrooms' => 'Number of bathrooms (total)'
+        ],
+        'Valuation & AVM Data' => [
+            'avm_value' => 'Current estimated market value',
+            'avm_confidence_score' => 'Confidence score for the estimate (0-100)',
+            'avm_value_high' => 'High end of value range',
+            'avm_value_low' => 'Low end of value range'
+        ],
+        'Sales & Transaction History' => [
+            'last_sale_date' => 'Date of last sale/transfer',
+            'last_sale_price' => 'Last sale price amount'
+        ],
+        'Tax Assessment Data' => [
+            'assessed_total_value' => 'Total assessed value for taxes',
+            'market_total_value' => 'Market total value from assessor'
+        ],
+        'Ownership Information' => [
+            'owner_name' => 'Current property owner name'
+        ],
+        'System Data' => [
+            'attomId' => 'ATTOM Data unique property identifier',
+            'lookup_time' => 'Timestamp when data was retrieved'
+        ]
+    ];
+}
+
 function agenticpress_hv_ai_instructions_field_html() {
     $default_instructions = "As a real estate analyst, provide a concise, two-paragraph summary of the property's value, speaking directly to the homeowner.
 
-Your property at {{full_address}}, a {{property_type}} with {{bedrooms}} bedrooms and {{bathrooms}} bathrooms, has seen significant appreciation since its last sale at {{last_sale_price}}. Today's automated valuation model (AVM) estimates its current value at **{{avm_value}}**, with a high confidence score of {{confidence_score}}. This suggests a substantial increase in your home equity and highlights the strong opportunity in the current market.
+Your property at {{full_address}}, a {{property_type}} with {{bedrooms}} bedrooms and {{bathrooms}} bathrooms, has seen significant appreciation since its last sale at {{last_sale_price}}. Today's automated valuation model (AVM) estimates its current value at **{{avm_value}}**, with a high confidence score of {{avm_confidence_score}}. This suggests a substantial increase in your home equity and highlights the strong opportunity in the current market.
 
 This automated estimate provides a powerful snapshot, but it doesn't account for your home's unique features or recent upgrades. To determine your property's true market value and unlock its full financial potential, a detailed Comparative Market Analysis (CMA) is essential. Contact us to schedule a complimentary, no-obligation CMA and make an informed decision about your investment.";
     $instructions = get_option('agenticpress_hv_ai_instructions', $default_instructions);
-    echo '<textarea name="agenticpress_hv_ai_instructions" rows="15" class="large-text">' . esc_textarea($instructions) . '</textarea>';
-    echo '<p class="description">Provide instructions for the AI. You can use placeholders like <code>{{bedrooms}}</code>, <code>{{bathrooms}}</code>, <code>{{year_built}}</code>, <code>{{lot_size_acres}}</code>, etc., to include data from the ATTOM API response. Refer to the ATTOM API documentation for available fields.</p>';
+    ?>
+    <textarea name="agenticpress_hv_ai_instructions" rows="15" class="large-text"><?php echo esc_textarea($instructions); ?></textarea>
+    
+    <div style="margin-top: 15px;">
+        <p><strong>Available Data Placeholders:</strong></p>
+        <p class="description">Click any placeholder below to insert it into your instructions. Use double curly braces: <code>{{placeholder_name}}</code></p>
+        
+        <div id="agenticpress-placeholder-selector" style="border: 1px solid #ddd; padding: 15px; background: #fafafa; max-height: 300px; overflow-y: auto;">
+            <?php
+            $placeholders = agenticpress_hv_get_ai_placeholders();
+            foreach ($placeholders as $category => $fields) {
+                echo '<h4 style="margin: 10px 0 5px 0; color: #2271b1;">' . esc_html($category) . '</h4>';
+                echo '<div style="margin-left: 15px;">';
+                foreach ($fields as $field => $description) {
+                    echo '<span class="placeholder-item" data-placeholder="' . esc_attr($field) . '" 
+                          style="display: inline-block; background: #fff; border: 1px solid #ccc; padding: 3px 8px; 
+                          margin: 2px; cursor: pointer; border-radius: 3px; font-size: 12px;"
+                          title="' . esc_attr($description) . '">
+                          {{' . esc_html($field) . '}}
+                          </span>';
+                }
+                echo '</div>';
+            }
+            ?>
+        </div>
+    </div>
+    
+    <script>
+    jQuery(document).ready(function($) {
+        $('.placeholder-item').on('click', function() {
+            var placeholder = '{{' + $(this).data('placeholder') + '}}';
+            var textarea = $('textarea[name="agenticpress_hv_ai_instructions"]');
+            var cursorPos = textarea.prop('selectionStart');
+            var textBefore = textarea.val().substring(0, cursorPos);
+            var textAfter = textarea.val().substring(cursorPos);
+            textarea.val(textBefore + placeholder + textAfter);
+            textarea.focus();
+            textarea.prop('selectionStart', cursorPos + placeholder.length);
+            textarea.prop('selectionEnd', cursorPos + placeholder.length);
+            
+            // Visual feedback
+            $(this).css('background', '#e7f3ff').delay(200).queue(function() {
+                $(this).css('background', '#fff').dequeue();
+            });
+        });
+        
+        // Add hover effects
+        $('.placeholder-item').hover(
+            function() { $(this).css('background', '#f0f8ff'); },
+            function() { $(this).css('background', '#fff'); }
+        );
+    });
+    </script>
+    
+    <p class="description" style="margin-top: 10px;">
+        <strong>Tips:</strong>
+        • Use placeholders to personalize AI responses with actual property data<br>
+        • Combine multiple placeholders for rich, detailed summaries<br>
+        • Example: "This {{bedrooms}}-bedroom, {{bathrooms}}-bathroom property built in {{year_built}} is valued at {{avm_value}}."
+    </p>
+    <?php
 }
 
 
@@ -573,20 +862,6 @@ function agenticpress_hv_welcome_page_html() {
                             <th scope="row"><label for="sc-button-text-color">Button Text Color</label></th>
                             <td><input type="color" id="sc-button-text-color" value="#ffffff"></td>
                         </tr>
-                        <tr>
-                            <th scope="row"><label for="sc-input-bg-color">Input Background Color</label></th>
-                            <td>
-                                <select id="sc-input-bg-color">
-                                    <option value="default">Default</option>
-                                    <option value="white">White</option>
-                                    <option value="black">Black</option>
-                                </select>
-                            </td>
-                        </tr>
-                         <tr>
-                            <th scope="row"><label for="sc-input-text-color">Input Text Color</label></th>
-                            <td><input type="color" id="sc-input-text-color" value="#000000"></td>
-                        </tr>
                     </tbody>
                 </table>
 
@@ -617,16 +892,6 @@ function agenticpress_hv_welcome_page_html() {
                          shortcode += ` button_position="${buttonPosition}"`;
                     }
 
-                    const inputBgColor = $('#sc-input-bg-color').val();
-                    if (inputBgColor && inputBgColor !== 'default') {
-                        shortcode += ` input_bg_color="${inputBgColor}"`;
-                    }
-
-                    const inputTextColor = $('#sc-input-text-color').val();
-                    if (inputTextColor && inputTextColor !== '#000000') {
-                        shortcode += ` input_text_color="${inputTextColor}"`;
-                    }
-
                     const gap = $('#sc-gap').val();
                     if (gap && gap !== '10') {
                         shortcode += ` gap="${gap}"`;
@@ -651,7 +916,7 @@ function agenticpress_hv_welcome_page_html() {
                     $('#generated-shortcode').val(shortcode);
                 }
 
-                $('#sc-button-text, #sc-input-width, #sc-button-position, #sc-gap, #sc-button-color, #sc-button-text-color, #sc-input-bg-color, #sc-input-text-color').on('input change', generateShortcode);
+                $('#sc-button-text, #sc-input-width, #sc-button-position, #sc-gap, #sc-button-color, #sc-button-text-color').on('input change', generateShortcode);
 
                 $('#copy-shortcode').on('click', function(e) {
                     e.preventDefault();
@@ -722,45 +987,6 @@ function agenticpress_hv_configuration_page_html() {
 }
 
 
-function agenticpress_hv_api_test_page_html() {
-    if (!current_user_can('agenticpress_access_api_test')) {
-        wp_die(__('You do not have sufficient permissions to access this page.'));
-    }
-    ?>
-    <div class="wrap">
-        <h1>API Test Area</h1>
-        <p>Use this form to make a direct call to an ATTOM API endpoint and see the raw JSON response.</p>
-        <form id="api-test-form">
-            <?php wp_nonce_field('agenticpress_api_test_nonce', 'api_test_nonce'); ?>
-            <table class="form-table">
-                <tbody>
-                    <tr>
-                        <th scope="row"><label for="api-test-address">Full Address</label></th>
-                        <td><input type="text" id="api-test-address" name="api_test_address" class="regular-text" placeholder="e.g., 400 Broad St, Seattle, WA 98109"></td>
-                    </tr>
-                    <tr>
-                        <th scope="row"><label for="api-test-endpoint">API Endpoint</label></th>
-                        <td>
-                            <select id="api-test-endpoint" name="api_test_endpoint">
-                                <option value="attomavm/detail">AVM Detail (recommended)</option>
-                                <option value="property/detail">Property Detail</option>
-                                <option value="assessment/detail">Assessment Detail</option>
-                                <option value="property/expandedprofile">Expanded Profile</option>
-                            </select>
-                        </td>
-                    </tr>
-                </tbody>
-            </table>
-            <p class="submit">
-                <input type="submit" name="submit" id="api-test-submit" class="button button-primary" value="Run API Test">
-                <span class="spinner"></span>
-            </p>
-        </form>
-        <h3>Raw JSON Response</h3>
-        <pre id="api-test-result"><code>Waiting for test...</code></pre>
-    </div>
-    <?php
-}
 
 function agenticpress_hv_lookups_page_html() {
     if (!current_user_can('read')) return;
@@ -921,6 +1147,19 @@ function agenticpress_hv_enqueue_scripts() {
             $google_script_url = 'https://maps.googleapis.com/maps/api/js?key=' . esc_attr($google_api_key) . '&libraries=places&v=beta';
             wp_enqueue_script('google-places-api', $google_script_url, [], null, true);
         }
+
+        // Load reCAPTCHA if enabled
+        $captcha_enabled = get_option('agenticpress_hv_enable_captcha', false);
+        $recaptcha_site_key = get_option('agenticpress_hv_recaptcha_site_key');
+        if ($captcha_enabled && !empty($recaptcha_site_key)) {
+            wp_enqueue_script('google-recaptcha', 'https://www.google.com/recaptcha/api.js?render=' . esc_attr($recaptcha_site_key), [], null, true);
+            wp_localize_script('agenticpress-hv-js', 'agenticpress_hv_recaptcha', [
+                'site_key' => $recaptcha_site_key,
+                'enabled' => true
+            ]);
+        } else {
+            wp_localize_script('agenticpress-hv-js', 'agenticpress_hv_recaptcha', ['enabled' => false]);
+        }
     }
 }
 
@@ -944,8 +1183,6 @@ function agenticpress_hv_render_form($atts) {
         'button_style' => '',
         'button_position' => 'below-left',
         'gap' => '10',
-        'input_bg_color' => '',
-        'input_text_color' => '',
     ], $atts);
 
     // --- Style & Class Generation ---
@@ -1102,6 +1339,16 @@ function agenticpress_hv_render_form($atts) {
             caret-color: <?php echo $text_color; ?> !important;
         }
 
+        /* Google Places API styling override */
+        gmp-place-autocomplete {
+            color-scheme: none !important;
+        }
+
+        .sidx-streamlined-toggle {
+            color: #387a00 !important;
+            border: 1px solid #387a00 !important;
+        }
+
         /* Fix dropdown suggestions styling - target all possible containers */
         gmp-place-autocomplete [role="listbox"],
         gmp-place-autocomplete [role="option"],
@@ -1130,27 +1377,39 @@ function agenticpress_hv_render_form($atts) {
             color: #333333 !important;
             background-color: #ffffff !important;
             opacity: 1 !important;
+            z-index: 9999 !important;
         }
 
         /* Dropdown container styling */
         #agenticpress-hv-container gmp-place-autocomplete [role="listbox"],
         .dropdown[part="prediction-list"],
-        ul[role="listbox"] {
+        ul[role="listbox"],
+        gmp-place-autocomplete::part(listbox),
+        gmp-place-autocomplete::part(option),
+        gmp-place-autocomplete::shadow > div,
+        gmp-place-autocomplete::shadow ul {
+            background: #ffffff !important;
             background-color: #ffffff !important;
             border: 1px solid #ccc !important;
             box-shadow: 0 2px 10px rgba(0,0,0,0.1) !important;
             opacity: 1 !important;
             backdrop-filter: none !important;
             -webkit-backdrop-filter: none !important;
+            z-index: 999999 !important;
+            position: relative !important;
         }
 
         /* Individual dropdown option styling */
         #agenticpress-hv-container gmp-place-autocomplete [role="option"],
         li[part="prediction-item"],
-        .place-autocomplete-element-row {
+        .place-autocomplete-element-row,
+        gmp-place-autocomplete::part(option-text),
+        gmp-place-autocomplete::shadow li {
+            background: #ffffff !important;
             background-color: #ffffff !important;
             color: #333333 !important;
             padding: 8px 12px !important;
+            opacity: 1 !important;
             border-bottom: 1px solid #f0f0f0 !important;
             opacity: 1 !important;
         }
@@ -1306,6 +1565,27 @@ function agenticpress_hv_render_form($atts) {
         #agenticpress-hv-container .gform_confirmation_wrapper {
             margin-top: 0 !important;
             padding-top: 0 !important;
+        }
+
+        /* Fix for Google Places dropdown transparency and z-index */
+        gmp-place-autocomplete {
+            color-scheme: none !important;
+        }
+
+        .sidx-streamlined-toggle {
+            color: #387a00 !important;
+            border: 1px solid #387a00 !important;
+        }
+
+        /* Ensure dropdown appears above all other content */
+        gmp-place-autocomplete [role="listbox"],
+        .dropdown[part="prediction-list"],
+        ul[role="listbox"],
+        body .pac-container {
+            z-index: 99999 !important;
+            position: relative !important;
+            background: white !important;
+            opacity: 1 !important;
         }
     </style>
     <div id="agenticpress-hv-container">
@@ -1607,50 +1887,6 @@ function agenticpress_hv_generate_ai_summary($property, $details) {
 }
 
 
-add_action('wp_ajax_agenticpress_api_test', 'agenticpress_hv_handle_api_test_request');
-function agenticpress_hv_handle_api_test_request() {
-    if (!check_ajax_referer('agenticpress_api_test_nonce', 'api_test_nonce')) {
-        wp_send_json_error(['message' => 'Security check failed.'], 403);
-    }
-
-    $api_key = agenticpress_hv_get_api_key('agenticpress_hv_api_key', 'AGENTICPRESS_ATTOM_API_KEY');
-    if (empty($api_key)) {
-        wp_send_json_error(['message' => 'ATTOM API Key is not configured.']);
-    }
-
-    $full_address = isset($_POST['address']) ? sanitize_text_field($_POST['address']) : '';
-    $endpoint = isset($_POST['endpoint']) ? sanitize_text_field($_POST['endpoint']) : 'property/detail';
-    if (empty($full_address)) {
-        wp_send_json_error(['message' => 'Please enter a full address.']);
-    }
-
-    $parts = explode(',', $full_address, 2);
-    $address1 = trim($parts[0]);
-    $address2 = isset($parts[1]) ? trim($parts[1]) : '';
-
-    if (empty($address2)) {
-        wp_send_json_error(['message' => 'Address format is invalid. Please use format: Street Address, City, ST ZIP']);
-    }
-
-    $base_url = 'https://api.gateway.attomdata.com/propertyapi/v1.0.0/' . $endpoint;
-    $address_query = http_build_query(['address1' => $address1, 'address2' => $address2]);
-    $api_url = $base_url . '?' . $address_query;
-
-    $api_args = ['headers' => ['apikey' => $api_key, 'Accept' => 'application/json'], 'timeout' => 20];
-    $response = wp_remote_get($api_url, $api_args);
-
-    if (is_wp_error($response)) {
-        wp_send_json_error(['message' => 'WP_Error: ' . $response->get_error_message()]);
-    }
-
-    $body = wp_remote_retrieve_body($response);
-    $response_code = wp_remote_retrieve_response_code($response);
-
-    $json_data = json_decode($body);
-    $pretty_json = json_encode($json_data, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
-
-    wp_send_json_success(['raw_json' => $pretty_json, 'status_code' => $response_code]);
-}
 
 // -----------------------------------------------------------------------------
 // Gravity Forms Integration Functions (defined globally but check for GFAPI)
@@ -1786,35 +2022,136 @@ if (class_exists('GFAPI')) {
     add_action('gform_after_submission', 'agenticpress_hv_capture_cma_submission', 10, 2);
 }
 
+// -----------------------------------------------------------------------------
+// Security Admin Page Functions
+// -----------------------------------------------------------------------------
+
 /**
- * Rate limiting function to prevent API abuse
- * Limits requests per IP address using WordPress transients
+ * Security settings page HTML
+ */
+function agenticpress_hv_security_page_html() {
+    if (!current_user_can('agenticpress_manage_settings')) {
+        wp_die(__('You do not have sufficient permissions to access this page.'));
+    }
+    
+    if (isset($_GET['settings-updated'])) {
+        add_settings_error('agenticpress_hv_messages', 'agenticpress_hv_message', __('Security settings saved.'), 'updated');
+    }
+    
+    settings_errors('agenticpress_hv_messages');
+    ?>
+    <div class="wrap agenticpress-security-page">
+        <h1><?php echo esc_html(get_admin_page_title()); ?></h1>
+        <div class="agenticpress-settings-container">
+            <form action="options.php" method="post">
+                <?php
+                settings_fields('agenticpress_hv_security_settings');
+                do_settings_sections('agenticpress_security');
+                submit_button('Save Security Settings');
+                ?>
+            </form>
+        </div>
+    </div>
+    <?php
+}
+
+/**
+ * Security section description
+ */
+function agenticpress_hv_security_section_html() {
+    echo '<p>Configure security measures to protect your forms from bots and abuse.</p>';
+}
+
+/**
+ * Enable CAPTCHA field
+ */
+function agenticpress_hv_enable_captcha_field_html() {
+    $enabled = get_option('agenticpress_hv_enable_captcha', false);
+    echo '<input type="checkbox" name="agenticpress_hv_enable_captcha" value="1" ' . checked(1, $enabled, false) . '>';
+    echo '<label for="agenticpress_hv_enable_captcha"> Enable Google reCAPTCHA v3 for bot protection</label>';
+}
+
+/**
+ * reCAPTCHA Site Key field
+ */
+function agenticpress_hv_recaptcha_site_key_field_html() {
+    $site_key = get_option('agenticpress_hv_recaptcha_site_key');
+    echo '<input type="text" name="agenticpress_hv_recaptcha_site_key" value="' . esc_attr($site_key) . '" class="regular-text" placeholder="Your reCAPTCHA Site Key">';
+    echo '<p class="description">Get your site key from <a href="https://www.google.com/recaptcha/admin" target="_blank">Google reCAPTCHA Console</a></p>';
+}
+
+/**
+ * reCAPTCHA Secret Key field
+ */
+function agenticpress_hv_recaptcha_secret_key_field_html() {
+    $secret_key = get_option('agenticpress_hv_recaptcha_secret_key');
+    echo '<input type="password" name="agenticpress_hv_recaptcha_secret_key" value="' . esc_attr($secret_key) . '" class="regular-text" placeholder="Your reCAPTCHA Secret Key">';
+    echo '<p class="description">Keep this key secure and never share it publicly</p>';
+}
+
+/**
+ * CAPTCHA Threshold field
+ */
+function agenticpress_hv_captcha_threshold_field_html() {
+    $threshold = get_option('agenticpress_hv_captcha_threshold', 0.5);
+    echo '<input type="number" step="0.1" min="0" max="1" name="agenticpress_hv_captcha_threshold" value="' . esc_attr($threshold) . '" class="small-text">';
+    echo '<p class="description">Score threshold (0.0-1.0). Lower scores indicate likely bot traffic. Recommended: 0.5</p>';
+}
+
+/**
+ * Advanced Protection field
+ */
+function agenticpress_hv_enable_advanced_protection_field_html() {
+    $enabled = get_option('agenticpress_hv_enable_advanced_protection', true);
+    echo '<input type="checkbox" name="agenticpress_hv_enable_advanced_protection" value="1" ' . checked(1, $enabled, false) . '>';
+    echo '<label for="agenticpress_hv_enable_advanced_protection"> Enable advanced bot detection (timing, fingerprinting, behavior analysis)</label>';
+}
+
+// -----------------------------------------------------------------------------
+// Security & Rate Limiting Functions
+// -----------------------------------------------------------------------------
+
+/**
+ * Enhanced rate limiting function with multiple tiers and progressive penalties
  */
 function agenticpress_hv_check_rate_limit() {
     $client_ip = agenticpress_hv_get_client_ip();
-    $rate_limit_key = 'agenticpress_rate_limit_' . md5($client_ip);
     
-    // Get current request count for this IP
-    $request_count = get_transient($rate_limit_key);
-    
-    // Rate limit settings (configurable)
-    $max_requests = apply_filters('agenticpress_hv_rate_limit_max_requests', 10);
-    $time_window = apply_filters('agenticpress_hv_rate_limit_time_window', HOUR_IN_SECONDS);
-    
-    if ($request_count === false) {
-        // First request from this IP
-        set_transient($rate_limit_key, 1, $time_window);
-        return true;
-    }
-    
-    if ($request_count >= $max_requests) {
-        // Rate limit exceeded
-        agenticpress_hv_log_rate_limit_violation($client_ip, $request_count);
+    // Check if IP is temporarily blocked
+    $block_key = 'agenticpress_blocked_' . md5($client_ip);
+    if (get_transient($block_key)) {
+        agenticpress_hv_log_security_event('blocked_ip_attempt', ['ip' => $client_ip]);
         return false;
     }
     
-    // Increment request count
-    set_transient($rate_limit_key, $request_count + 1, $time_window);
+    // Multi-tier rate limiting
+    $rate_limits = [
+        'minute' => ['max' => 3, 'window' => MINUTE_IN_SECONDS],
+        'hour' => ['max' => 10, 'window' => HOUR_IN_SECONDS],
+        'day' => ['max' => 50, 'window' => DAY_IN_SECONDS]
+    ];
+    
+    foreach ($rate_limits as $tier => $config) {
+        $rate_limit_key = 'agenticpress_rate_limit_' . $tier . '_' . md5($client_ip);
+        $request_count = get_transient($rate_limit_key);
+        $max_requests = apply_filters("agenticpress_hv_rate_limit_max_{$tier}", $config['max']);
+        
+        if ($request_count === false) {
+            set_transient($rate_limit_key, 1, $config['window']);
+        } else {
+            if ($request_count >= $max_requests) {
+                // Progressive blocking: minute violation = 5 min block, hour = 30 min, day = 24 hours
+                $block_duration = $tier === 'minute' ? 5 * MINUTE_IN_SECONDS : 
+                                ($tier === 'hour' ? 30 * MINUTE_IN_SECONDS : DAY_IN_SECONDS);
+                
+                set_transient($block_key, true, $block_duration);
+                agenticpress_hv_log_rate_limit_violation($client_ip, $request_count, $tier);
+                return false;
+            }
+            set_transient($rate_limit_key, $request_count + 1, $config['window']);
+        }
+    }
+    
     return true;
 }
 
@@ -1841,12 +2178,15 @@ function agenticpress_hv_get_client_ip() {
 /**
  * Log rate limit violations for monitoring
  */
-function agenticpress_hv_log_rate_limit_violation($ip, $request_count) {
+function agenticpress_hv_log_rate_limit_violation($ip, $request_count, $tier = 'general') {
     $log_entry = [
         'timestamp' => current_time('mysql'),
         'ip' => $ip,
         'request_count' => $request_count,
-        'user_agent' => $_SERVER['HTTP_USER_AGENT'] ?? 'Unknown'
+        'tier' => $tier,
+        'user_agent' => $_SERVER['HTTP_USER_AGENT'] ?? 'Unknown',
+        'referer' => $_SERVER['HTTP_REFERER'] ?? 'Unknown',
+        'request_method' => $_SERVER['REQUEST_METHOD'] ?? 'Unknown'
     ];
     
     // Log to WordPress debug log if enabled
@@ -1858,45 +2198,111 @@ function agenticpress_hv_log_rate_limit_violation($ip, $request_count) {
     global $wpdb;
     $table_name = $wpdb->prefix . 'agenticpress_security_log';
     
-    // Create security log table if it doesn't exist
-    $wpdb->query("CREATE TABLE IF NOT EXISTS {$table_name} (
-        id int(11) NOT NULL AUTO_INCREMENT,
-        timestamp datetime NOT NULL,
-        event_type varchar(50) NOT NULL DEFAULT 'rate_limit_violation',
-        ip_address varchar(45) NOT NULL,
-        request_count int(11) DEFAULT NULL,
-        user_agent text,
-        PRIMARY KEY (id),
-        KEY idx_timestamp (timestamp),
-        KEY idx_ip (ip_address)
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+    // Ensure security log table exists
+    agenticpress_hv_create_security_log_table();
     
     $wpdb->insert($table_name, [
         'timestamp' => $log_entry['timestamp'],
         'event_type' => 'rate_limit_violation',
         'ip_address' => $log_entry['ip'],
-        'request_count' => $log_entry['request_count'],
-        'user_agent' => $log_entry['user_agent']
+        'request_count' => $request_count,
+        'tier' => $tier,
+        'user_agent' => $log_entry['user_agent'],
+        'referer' => $log_entry['referer'],
+        'request_method' => $log_entry['request_method']
     ]);
 }
 
 /**
- * Verify that the request appears to come from a human user
- * Uses honeypot fields and timing analysis
+ * Verify reCAPTCHA v3 response
+ */
+function agenticpress_hv_verify_recaptcha($captcha_response) {
+    $secret_key = get_option('agenticpress_hv_recaptcha_secret_key');
+    if (empty($secret_key) || empty($captcha_response)) {
+        return false;
+    }
+    
+    $response = wp_remote_post('https://www.google.com/recaptcha/api/siteverify', [
+        'body' => [
+            'secret' => $secret_key,
+            'response' => $captcha_response,
+            'remoteip' => agenticpress_hv_get_client_ip()
+        ]
+    ]);
+    
+    if (is_wp_error($response)) {
+        agenticpress_hv_log_security_event('recaptcha_error', ['error' => $response->get_error_message()]);
+        return false;
+    }
+    
+    $body = wp_remote_retrieve_body($response);
+    $data = json_decode($body, true);
+    
+    if (!$data['success']) {
+        agenticpress_hv_log_security_event('recaptcha_failed', ['errors' => $data['error-codes'] ?? []]);
+        return false;
+    }
+    
+    $threshold = get_option('agenticpress_hv_captcha_threshold', 0.5);
+    $score = $data['score'] ?? 0;
+    
+    if ($score < $threshold) {
+        agenticpress_hv_log_security_event('recaptcha_low_score', ['score' => $score, 'threshold' => $threshold]);
+        return false;
+    }
+    
+    return true;
+}
+
+/**
+ * Advanced request fingerprinting and bot detection
+ */
+function agenticpress_hv_generate_request_fingerprint() {
+    $fingerprint_data = [
+        'ip' => agenticpress_hv_get_client_ip(),
+        'user_agent' => $_SERVER['HTTP_USER_AGENT'] ?? '',
+        'accept_language' => $_SERVER['HTTP_ACCEPT_LANGUAGE'] ?? '',
+        'accept_encoding' => $_SERVER['HTTP_ACCEPT_ENCODING'] ?? '',
+        'connection' => $_SERVER['HTTP_CONNECTION'] ?? '',
+        'referer' => $_SERVER['HTTP_REFERER'] ?? '',
+        'request_method' => $_SERVER['REQUEST_METHOD'] ?? '',
+        'headers' => array_filter([
+            'x-forwarded-for' => $_SERVER['HTTP_X_FORWARDED_FOR'] ?? null,
+            'x-real-ip' => $_SERVER['HTTP_X_REAL_IP'] ?? null,
+            'cf-connecting-ip' => $_SERVER['HTTP_CF_CONNECTING_IP'] ?? null
+        ])
+    ];
+    
+    return hash('sha256', json_encode($fingerprint_data));
+}
+
+/**
+ * Enhanced human verification with multiple security layers
  */
 function agenticpress_hv_verify_human_request() {
-    // Honeypot field check - should be empty
+    $advanced_protection = get_option('agenticpress_hv_enable_advanced_protection', true);
+    
+    // Layer 1: reCAPTCHA verification (if enabled)
+    $captcha_enabled = get_option('agenticpress_hv_enable_captcha', false);
+    if ($captcha_enabled) {
+        $captcha_response = isset($_POST['g-recaptcha-response']) ? sanitize_text_field($_POST['g-recaptcha-response']) : '';
+        if (!agenticpress_hv_verify_recaptcha($captcha_response)) {
+            return false;
+        }
+    }
+    
+    // Layer 2: Honeypot field check - should be empty
     $honeypot = isset($_POST['website']) ? sanitize_text_field($_POST['website']) : '';
     if (!empty($honeypot)) {
         agenticpress_hv_log_security_event('honeypot_triggered', ['honeypot_value' => $honeypot]);
         return false;
     }
     
-    // Timing check - prevent requests submitted too quickly (likely bots)
+    // Layer 3: Timing analysis
     $form_timestamp = isset($_POST['form_timestamp']) ? intval($_POST['form_timestamp']) : 0;
     $current_time = time();
-    $min_time_threshold = apply_filters('agenticpress_hv_min_form_time', 3); // Minimum 3 seconds
-    $max_time_threshold = apply_filters('agenticpress_hv_max_form_time', 3600); // Maximum 1 hour
+    $min_time_threshold = apply_filters('agenticpress_hv_min_form_time', 3);
+    $max_time_threshold = apply_filters('agenticpress_hv_max_form_time', 3600);
     
     if ($form_timestamp === 0) {
         agenticpress_hv_log_security_event('missing_timestamp');
@@ -1915,18 +2321,102 @@ function agenticpress_hv_verify_human_request() {
         return false;
     }
     
-    // User agent check - block obvious bots
+    if ($advanced_protection) {
+        // Layer 4: Enhanced user agent analysis
+        if (!agenticpress_hv_validate_user_agent()) {
+            return false;
+        }
+        
+        // Layer 5: Request pattern analysis
+        if (!agenticpress_hv_analyze_request_pattern()) {
+            return false;
+        }
+        
+        // Layer 6: Behavioral analysis
+        if (!agenticpress_hv_analyze_user_behavior()) {
+            return false;
+        }
+    }
+    
+    return true;
+}
+
+/**
+ * Enhanced user agent validation
+ */
+function agenticpress_hv_validate_user_agent() {
     $user_agent = $_SERVER['HTTP_USER_AGENT'] ?? '';
+    
+    if (empty($user_agent)) {
+        agenticpress_hv_log_security_event('missing_user_agent');
+        return false;
+    }
+    
+    // Expanded bot pattern detection
     $bot_patterns = [
-        'curl', 'wget', 'python', 'bot', 'spider', 'crawler', 
-        'scraper', 'postman', 'insomnia', 'automated'
+        'curl', 'wget', 'python', 'bot', 'spider', 'crawler', 'scraper',
+        'postman', 'insomnia', 'automated', 'phantom', 'selenium', 'headless',
+        'puppeteer', 'playwright', 'requests', 'urllib', 'httpie', 'apache-httpclient'
     ];
     
     foreach ($bot_patterns as $pattern) {
         if (stripos($user_agent, $pattern) !== false) {
-            agenticpress_hv_log_security_event('bot_user_agent', ['user_agent' => $user_agent]);
+            agenticpress_hv_log_security_event('bot_user_agent', ['user_agent' => $user_agent, 'pattern' => $pattern]);
             return false;
         }
+    }
+    
+    // Check for suspicious user agent patterns
+    if (strlen($user_agent) < 10 || strlen($user_agent) > 500) {
+        agenticpress_hv_log_security_event('suspicious_user_agent_length', ['user_agent' => $user_agent, 'length' => strlen($user_agent)]);
+        return false;
+    }
+    
+    return true;
+}
+
+/**
+ * Analyze request patterns for bot behavior
+ */
+function agenticpress_hv_analyze_request_pattern() {
+    // Check for missing headers that legitimate browsers send
+    $required_headers = ['HTTP_ACCEPT', 'HTTP_ACCEPT_LANGUAGE'];
+    foreach ($required_headers as $header) {
+        if (!isset($_SERVER[$header]) || empty($_SERVER[$header])) {
+            agenticpress_hv_log_security_event('missing_browser_header', ['header' => $header]);
+            return false;
+        }
+    }
+    
+    // Check for suspicious header combinations
+    $accept_header = $_SERVER['HTTP_ACCEPT'] ?? '';
+    if (strpos($accept_header, 'text/html') === false && strpos($accept_header, '*/*') === false) {
+        agenticpress_hv_log_security_event('suspicious_accept_header', ['accept' => $accept_header]);
+        return false;
+    }
+    
+    return true;
+}
+
+/**
+ * Analyze user behavior patterns
+ */
+function agenticpress_hv_analyze_user_behavior() {
+    $client_ip = agenticpress_hv_get_client_ip();
+    $fingerprint = agenticpress_hv_generate_request_fingerprint();
+    
+    // Check for rapid repeated requests with same fingerprint
+    $fingerprint_key = 'agenticpress_fingerprint_' . $fingerprint;
+    $fingerprint_count = get_transient($fingerprint_key);
+    
+    if ($fingerprint_count === false) {
+        set_transient($fingerprint_key, 1, 5 * MINUTE_IN_SECONDS);
+    } else {
+        if ($fingerprint_count >= 3) { // Max 3 requests per 5 minutes with same fingerprint
+            agenticpress_hv_log_security_event('fingerprint_abuse', ['fingerprint' => $fingerprint, 'count' => $fingerprint_count]);
+            return false;
+        }
+        set_transient($fingerprint_key, $fingerprint_count + 1, 5 * MINUTE_IN_SECONDS);
     }
     
     return true;
